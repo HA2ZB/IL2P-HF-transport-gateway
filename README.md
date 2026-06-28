@@ -223,6 +223,12 @@ later (GPL-2.0-or-later)**.
 
 See the `LICENSE` file for details.
 
+This project is intended as a practical utility for the amateur radio
+community.
+
+This project was developed by the author with iterative assistance from
+AI-based coding tools.
+
 ------------------------------------------------------------------------
 
 ## Acknowledgements
