@@ -1,0 +1,6 @@
+reedsolo
+fastapi
+uvicorn
+pyyaml
+pydantic
+pytest

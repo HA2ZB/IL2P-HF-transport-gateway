@@ -1,0 +1,89 @@
+# IL2P / APRS over HF REST service configuration
+
+# Human identification is deliberately kept in the on-air text frame:
+#   HA2ZB IL2P CODING=BASE64 LEN=69 <IL2P>...</IL2P>
+# This is not encryption/obfuscation; it is a self-describing amateur packet.
+
+gateway:
+  callsign: "HA2ZB-0"
+  station_role: "standalone"
+  island_id: "test-island"
+
+aprs:
+  default_il2p_destination: "APIL2P-0"
+  default_pid: 0xF0
+  default_control: 0x03
+
+fldigi:
+  xmlrpc_url: "http://127.0.0.1:7362"
+  strip_tx_newlines: true
+  rx_resync_delay_s: 0.4
+
+transport_defaults:
+  # REST clients should normally send only transport.mode. "profile" remains
+  # accepted as a backward-compatible alias.
+  mode: "olivia_4_250"
+  profile: "olivia_4_250"
+  fec: 1
+  coding: "profile"       # profile | base32 | base64 | none
+  tx: true                 # true = transmit through modem, false = encode only
+
+mode_profiles:
+  olivia_4_250:
+    adapter: "fldigi"
+    fldigi_mode: "Olivia 4/250"
+    default_coding: "base64"
+    default_fec: 1
+    announce_mode: true       # fldigi TXID/RSID at TX start
+    auto_detect_mode: false   # RXID off: this is a fixed-use-case link
+    keep_human_readable_frame: true
+    max_aprs_payload_bytes: 180
+    description: "Validated HF profile: Olivia works well with Base64."
+
+  contestia_4_250:
+    adapter: "fldigi"
+    fldigi_mode: "Contestia 4/250"
+    default_coding: "base32"
+    default_fec: 1
+    announce_mode: true
+    auto_detect_mode: false
+    keep_human_readable_frame: true
+    max_aprs_payload_bytes: 180
+    description: "Contestia profile: Base32 avoids case/character-set issues."
+
+  contestia_4_125:
+    adapter: "fldigi"
+    fldigi_mode: "Contestia 4/125"
+    default_coding: "base32"
+    default_fec: 1
+    announce_mode: true
+    auto_detect_mode: false
+    keep_human_readable_frame: true
+    max_aprs_payload_bytes: 120
+
+  rtty_45:
+    adapter: "fldigi"
+    fldigi_mode: "RTTY"
+    default_coding: "base32"
+    default_fec: 1
+    announce_mode: false      # visually/audibly recognizable mode
+    auto_detect_mode: false
+    keep_human_readable_frame: true
+    max_aprs_payload_bytes: 120
+
+  bpsk31:
+    adapter: "fldigi"
+    fldigi_mode: "BPSK31"
+    default_coding: "base32"
+    default_fec: 1
+    announce_mode: false      # visually/audibly recognizable mode
+    auto_detect_mode: false
+    keep_human_readable_frame: true
+    max_aprs_payload_bytes: 100
+
+  byte_transparent_test:
+    adapter: "raw"
+    default_coding: "none"
+    default_fec: 1
+    keep_human_readable_frame: false
+    max_aprs_payload_bytes: 220
