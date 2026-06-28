@@ -11,6 +11,8 @@ class ModemStatus:
     carrier: str = "N/A"
     txid: bool | None = None
     rxid: bool | None = None
+    status1: str | None = None
+    status2: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

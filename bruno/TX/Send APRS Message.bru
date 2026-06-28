@@ -1,0 +1,22 @@
+meta {
+  name: Send APRS Message
+  type: http
+  seq: 3
+}
+
+post {
+  url: {{base_url}}/send/aprs
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "to": "{{aprs_to}}",
+    "text": "Hello via IL2P HF",
+    "transport": {
+      "mode": "{{mode}}",
+      "tx": true
+    }
+  }
+}

@@ -30,7 +30,7 @@ from il2p.codec import decode_il2p_frame, encode_il2p_type1_ui, rebuild_ax25_ui_
 from il2p.config import ModeProfile, profile_from_config
 from il2p.framing import decode_frame_text, encode_frame_text
 from il2p.modem import FldigiXmlRpcModem, TxOptions
-from il2p.runtime import LinkState, RxDiagnostics, RxStore
+from il2p.runtime import FldigiWatcherService, LinkState, RxDiagnostics, RxStore, RxWatcher
 
 
 # ---------------------------------------------------------------------------
@@ -44,6 +44,8 @@ class ServiceState:
         self.started_at = time.time()
         self.tx_log: list[dict[str, Any]] = []
         self.rx_store = RxStore(maxlen=500)
+        self.watcher_service: FldigiWatcherService | None = None
+        self.watcher_profile: str | None = None
 
 
 state = ServiceState()
@@ -179,7 +181,7 @@ def fldigi_modem() -> FldigiXmlRpcModem:
 def fldigi_status() -> dict[str, Any]:
     try:
         s = fldigi_modem().status()
-        return {"connected": True, "modem": s.name, "trx": s.trx, "carrier": s.carrier}
+        return {"connected": True, "modem": s.name, "trx": s.trx, "carrier": s.carrier, "status1": s.status1, "status2": s.status2}
     except Exception as e:
         return {"connected": False, "error": str(e)}
 
@@ -187,6 +189,9 @@ def fldigi_status() -> dict[str, Any]:
 def transmit_text(profile: ModeProfile, text: str) -> None:
     if profile.adapter != "fldigi":
         raise HTTPException(status_code=400, detail=f"TX adapter not implemented for profile {profile.name}: {profile.adapter}")
+    watcher_was_running = bool(state.watcher_service and state.watcher_service.running and not state.watcher_service.paused)
+    if state.watcher_service:
+        state.watcher_service.pause("local transmit")
     try:
         modem = fldigi_modem()
         modem.tx_text(
@@ -202,6 +207,9 @@ def transmit_text(profile: ModeProfile, text: str) -> None:
         )
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"fldigi TX failed: {e}")
+    finally:
+        if state.watcher_service and watcher_was_running:
+            state.watcher_service.resume("RX watcher resumed after local transmit")
 
 
 # ---------------------------------------------------------------------------
@@ -218,6 +226,19 @@ class TransportRequest(BaseModel):
 
     def mode_name(self) -> str | None:
         return self.mode or self.profile
+
+
+class SendRequest(BaseModel):
+    """Generic HF transport payload request.
+
+    This is deliberately not APRS-specific. The payload is carried as the IL2P
+    Type-1 information field; higher application layers can build on top of it.
+    """
+
+    payload: str
+    from_call: str | None = None
+    il2p_destination: str | None = None
+    transport: TransportRequest = Field(default_factory=TransportRequest)
 
 
 class MessageRequest(BaseModel):
@@ -238,6 +259,16 @@ class DecodeRequest(BaseModel):
     il2p_base64: str | None = None
     framed_text: str | None = None
     coding: Literal["base32", "base64", "b32", "b64"] | None = None
+
+
+class WatcherStartRequest(BaseModel):
+    mode: str | None = None
+    profile: str | None = None
+    poll_s: float | None = Field(default=None, gt=0, le=10)
+    max_buffer: int | None = Field(default=None, ge=1024, le=200000)
+
+    def mode_name(self) -> str | None:
+        return self.mode or self.profile
 
 
 # ---------------------------------------------------------------------------
@@ -358,35 +389,85 @@ def status() -> dict[str, Any]:
         "rx_active": state.rx_store.rx_active,
         "tx_active": state.rx_store.tx_active,
         "last_result_id": state.rx_store.last_result_id,
+        "watcher": {
+            "running": bool(state.watcher_service and state.watcher_service.running),
+            "paused": bool(state.watcher_service and state.watcher_service.paused),
+            "profile": state.watcher_profile,
+        },
         "fldigi": fldigi_status(),
     }
 
 
-@app.get("/profiles")
-def profiles() -> dict[str, Any]:
+@app.get("/modes")
+def modes() -> dict[str, Any]:
+    """List mode profiles. This is the frozen public endpoint."""
     return {
         "default": cfg_get("transport_defaults.profile", cfg_get("transport_defaults.mode")),
-        "profiles": {name: asdict(p) for name, p in all_profiles().items()},
+        "modes": {name: asdict(p) for name, p in all_profiles().items()},
     }
 
 
-@app.post("/message")
-def post_message(req: MessageRequest) -> dict[str, Any]:
+@app.get("/modes/{mode_name}")
+def mode_detail(mode_name: str) -> dict[str, Any]:
+    profiles = all_profiles()
+    if mode_name not in profiles:
+        raise HTTPException(status_code=404, detail="Mode/profile not found")
+    return asdict(profiles[mode_name])
+
+
+# Backward-compatible alias from sprint2/3.
+@app.get("/profiles")
+def profiles() -> dict[str, Any]:
+    m = modes()
+    return {"default": m["default"], "profiles": m["modes"]}
+
+
+@app.post("/send")
+def post_send(req: SendRequest) -> dict[str, Any]:
+    """Generic HF transport send.
+
+    The request payload is not interpreted as APRS. APRS-specific helpers are
+    exposed separately under /send/aprs.
+    """
+    src = normalize_call(req.from_call or cfg_get("gateway.callsign", "NOCALL-0"))
+    tr = req.transport
+    if req.il2p_destination and not tr.il2p_destination:
+        tr.il2p_destination = req.il2p_destination
+    dst = normalize_call(tr.il2p_destination or cfg_get("aprs.default_il2p_destination", "APRS"))
+    result = encode_pipeline(src, dst, req.payload, tr)
+    result["normalized"] = {"src": src, "il2p_destination": dst, "payload": req.payload, "application": "generic"}
+    return result
+
+
+@app.post("/send/aprs")
+def post_send_aprs(req: MessageRequest) -> dict[str, Any]:
     src = normalize_call(req.from_call or cfg_get("gateway.callsign", "NOCALL-0"))
     dst = normalize_call(req.transport.il2p_destination or cfg_get("aprs.default_il2p_destination", "APRS"))
     info = make_aprs_message(req.to, req.text, req.msgid)
     result = encode_pipeline(src, dst, info, req.transport)
-    result["normalized"] = {"src": src, "il2p_destination": dst, "aprs_info": info, **parse_aprs_message_info(info)}
+    result["normalized"] = {"src": src, "il2p_destination": dst, "aprs_info": info, "application": "aprs", **parse_aprs_message_info(info)}
     return result
 
 
-@app.post("/tx_raw_aprs")
-def post_tx_raw_aprs(req: RawAprsRequest) -> dict[str, Any]:
+# Backward-compatible alias from sprint3.
+@app.post("/message")
+def post_message(req: MessageRequest) -> dict[str, Any]:
+    return post_send_aprs(req)
+
+
+@app.post("/send/aprs/raw")
+def post_send_raw_aprs(req: RawAprsRequest) -> dict[str, Any]:
     parsed = parse_tnc2(req.packet)
     path_warning = "TNC2 path was parsed but is not carried in IL2P Type-1 frame" if parsed["path"] else None
     result = encode_pipeline(parsed["src"], parsed["dst"], parsed["info"], req.transport)
-    result["normalized"] = {**parsed, **parse_aprs_message_info(parsed["info"]), "warning": path_warning}
+    result["normalized"] = {**parsed, **parse_aprs_message_info(parsed["info"]), "warning": path_warning, "application": "aprs"}
     return result
+
+
+# Backward-compatible alias from sprint3.
+@app.post("/tx_raw_aprs")
+def post_tx_raw_aprs(req: RawAprsRequest) -> dict[str, Any]:
+    return post_send_raw_aprs(req)
 
 
 @app.post("/decode")
@@ -413,6 +494,84 @@ def decode(req: DecodeRequest) -> dict[str, Any]:
         raise
 
 
+@app.post("/rx/watch/start")
+def rx_watch_start(req: WatcherStartRequest) -> dict[str, Any]:
+    profile = get_profile(req.mode_name())
+    if profile.adapter != "fldigi":
+        raise HTTPException(status_code=400, detail=f"RX watcher adapter not implemented for profile {profile.name}: {profile.adapter}")
+    if state.watcher_service and state.watcher_service.running:
+        return {"ok": True, "already_running": True, "profile": state.watcher_profile}
+
+    modem = fldigi_modem()
+    try:
+        modem.set_mode(profile.fldigi_mode or "")
+        modem.set_id_policy(announce_mode=profile.announce_mode, auto_detect_mode=profile.auto_detect_mode)
+        modem.clear_rx()
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"fldigi RX watcher setup failed: {e}")
+
+    watcher = RxWatcher(
+        state.rx_store,
+        mode=profile.name,
+        max_buffer=int(req.max_buffer or cfg_get("rx.max_buffer", 20000)),
+    )
+    state.watcher_service = FldigiWatcherService(
+        modem,
+        watcher,
+        poll_s=float(req.poll_s or cfg_get("rx.poll_s", 0.2)),
+    )
+    state.watcher_profile = profile.name
+    state.watcher_service.start()
+    return {"ok": True, "running": True, "profile": profile.name}
+
+
+@app.post("/rx/watch/stop")
+def rx_watch_stop() -> dict[str, Any]:
+    if state.watcher_service:
+        state.watcher_service.stop()
+    state.watcher_service = None
+    old_profile = state.watcher_profile
+    state.watcher_profile = None
+    return {"ok": True, "running": False, "profile": old_profile}
+
+
+@app.post("/rx/watch/pause")
+def rx_watch_pause() -> dict[str, Any]:
+    if not state.watcher_service or not state.watcher_service.running:
+        raise HTTPException(status_code=400, detail="RX watcher is not running")
+    state.watcher_service.pause("manual pause")
+    return {"ok": True, "paused": True}
+
+
+@app.post("/rx/watch/resume")
+def rx_watch_resume() -> dict[str, Any]:
+    if not state.watcher_service or not state.watcher_service.running:
+        raise HTTPException(status_code=400, detail="RX watcher is not running")
+    state.watcher_service.resume("manual resume")
+    return {"ok": True, "paused": False}
+
+
+# Frozen public watcher endpoints. The /rx/watch/* paths remain accepted.
+@app.post("/watch/start")
+def watch_start(req: WatcherStartRequest) -> dict[str, Any]:
+    return rx_watch_start(req)
+
+
+@app.post("/watch/stop")
+def watch_stop() -> dict[str, Any]:
+    return rx_watch_stop()
+
+
+@app.post("/watch/pause")
+def watch_pause() -> dict[str, Any]:
+    return rx_watch_pause()
+
+
+@app.post("/watch/resume")
+def watch_resume() -> dict[str, Any]:
+    return rx_watch_resume()
+
+
 @app.get("/rx/results")
 def rx_results(since: int = Query(default=0, ge=0), limit: int = Query(default=50, ge=1, le=500), detailed: bool = False) -> dict[str, Any]:
     return {"items": state.rx_store.list_results(since=since, limit=limit, detailed=detailed), "last_result_id": state.rx_store.last_result_id}
@@ -424,6 +583,44 @@ def rx_result(result_id: int) -> dict[str, Any]:
     if not result:
         raise HTTPException(status_code=404, detail="RX result not found")
     return result.as_dict(detailed=True)
+
+
+@app.get("/statistics")
+def statistics() -> dict[str, Any]:
+    results = list(state.rx_store.results)
+    ok = [r for r in results if r.valid]
+    bad = [r for r in results if not r.valid]
+    snr_vals = [r.diagnostics.snr_avg for r in results if r.diagnostics and r.diagnostics.snr_avg is not None]
+    snr_min_vals = [r.diagnostics.snr_min for r in results if r.diagnostics and r.diagnostics.snr_min is not None]
+    return {
+        "frames_ok": len(ok),
+        "frames_bad": len(bad),
+        "frames_total": len(results),
+        "last_result_id": state.rx_store.last_result_id,
+        "tx_count": len(state.tx_log),
+        "snr_avg": (sum(snr_vals) / len(snr_vals) if snr_vals else None),
+        "snr_min": (min(snr_min_vals) if snr_min_vals else None),
+    }
+
+
+@app.get("/config")
+def get_config() -> dict[str, Any]:
+    return state.config
+
+
+@app.post("/config")
+def update_config(patch: dict[str, Any]) -> dict[str, Any]:
+    """Shallow in-memory config update for lab use.
+
+    Persistent config editing should still be done in il2p_gateway.yaml until a
+    stronger validation/persistence layer is introduced.
+    """
+    for k, v in patch.items():
+        if isinstance(v, dict) and isinstance(state.config.get(k), dict):
+            state.config[k].update(v)
+        else:
+            state.config[k] = v
+    return state.config
 
 
 @app.get("/tx_log")

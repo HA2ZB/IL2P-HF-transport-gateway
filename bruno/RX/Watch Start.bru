@@ -1,0 +1,17 @@
+meta {
+  name: Watch Start
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{base_url}}/watch/start
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "mode": "{{mode}}"
+  }
+}

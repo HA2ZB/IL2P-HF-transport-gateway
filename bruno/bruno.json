@@ -1,0 +1,6 @@
+{
+  "version": "1",
+  "name": "IL2P-HF Gateway",
+  "type": "collection",
+  "ignore": ["node_modules", ".git"]
+}

@@ -1,218 +1,208 @@
-# IL2P HF Gateway
+# IL2P HF Transport Gateway
 
-> **Open-source HF transport for APRS messaging using IL2P over modern
-> narrow-band digital modes.**
+> **Open-source HF transport engine for IL2P messaging over modern narrow-band amateur radio digital modes.**
 
-------------------------------------------------------------------------
+---
 
 ## Overview
 
-**IL2P HF Gateway** is an experimental implementation of an HF messaging
-gateway based on the open **IL2P** protocol.
+IL2P HF Transport Gateway is an experimental but rapidly evolving open-source project implementing a complete HF transport layer based on the open IL2P protocol.
 
-The project combines:
+The project currently combines:
 
--   **IL2P** as the Layer-2 data link protocol
--   **fldigi** as the initial modem backend
--   Modern HF digital modes such as **Olivia** and **Contestia**
--   A REST API for external applications
--   Human-readable over-the-air framing for transparency and
-    interoperability
+- Native IL2P Type-1 implementation
+- Reed-Solomon FEC
+- fldigi modem backend
+- Olivia and Contestia digital modes
+- Automatic Base32 / Base64 framing selection
+- REST API
+- Background RX watcher
+- Continuous Integration (GitHub Actions)
+- Automated regression tests
 
-Unlike proprietary solutions, the entire protocol stack is designed to
-remain open, inspectable and community-extensible.
+The long-term goal is to provide a completely open alternative for HF packet transport that is independent of proprietary modem technologies.
 
-------------------------------------------------------------------------
+---
 
-## Project Goals
+# Current Architecture
 
--   Fully open HF transport
--   Native IL2P implementation
--   APRS-compatible information payloads
--   Transparent HF gateway architecture
--   Modular modem abstraction
--   REST API for automation
--   Future support for additional modem engines (VARA, ARDOP, etc.)
-
-------------------------------------------------------------------------
-
-# Sprint 2
-
-Sprint 2 introduces the first version of the application layer on top of
-the modular architecture created during Sprint 1.
-
-## Highlights
-
--   Mode Profile abstraction
--   Automatic fldigi mode switching
--   Half-duplex TX/RX state machine
--   REST polling model
--   Human-readable on-air framing
--   Canonical text framing (Base32/Base64)
--   Runtime RX result queue
-
-------------------------------------------------------------------------
-
-## Architecture
-
-``` text
-il2p/
-├── codec/          IL2P codec, AX.25 helpers, Reed-Solomon, scrambler
-├── framing/        Base32/Base64 framing
-├── modem/          fldigi XML-RPC modem adapter
-├── config/         Mode profile configuration
-├── runtime/        Link state and RX queue
-├── aprs/           APRS helpers
-├── diagnostics/    SNR/statistics
-└── api/            REST API
-
-tools/
-legacy/
+```
+Application Layer
+        │
+        ▼
+ REST API
+        │
+        ▼
+ IL2P Core
+ ├── APRS
+ ├── Registry
+ ├── Routing
+ ├── ACK / Retry
+ ├── Framing
+ ├── Diagnostics
+ └── Modem Abstraction
+        │
+        ▼
+ fldigi XML-RPC
 ```
 
-------------------------------------------------------------------------
+The transport layer is intentionally independent from APRS. APRS is treated as one possible application protocol running over IL2P.
 
-## Mode Profiles
+---
 
-Rather than selecting modem parameters individually, applications simply
-request a **mode profile**.
+# Sprint 3
+
+Sprint 3 introduced the runtime communication model.
+
+## Added
+
+- Background RX watcher service
+- Half-duplex TX/RX controller
+- Automatic watcher pause during transmission
+- Automatic resume after TX
+- Runtime RX result queue
+- Frame detection pipeline
+- Pollable REST status model
+- RX state machine
+
+The receiver continuously monitors fldigi output while applications communicate only through the REST API.
+
+---
+
+# Sprint 4
+
+Sprint 4 stabilizes the public API.
+
+## Added
+
+- Stable REST endpoints
+- REST-first architecture
+- Bruno API collection
+- GitHub Actions CI
+- Expanded automated tests
+- Canonical human-readable over-the-air framing
+
+Canonical transmitted frame:
+
+```
+<CALLSIGN> IL2P CODING=BASE32|BASE64 LEN=<n> <IL2P>...</IL2P>
+```
+
+This intentionally keeps every transmission identifiable as amateur-radio digital traffic.
+
+---
+
+# Mode Profiles
+
+Applications no longer configure modem parameters individually.
+
+Instead they simply select a mode profile.
 
 Example:
 
-``` yaml
-mode_profiles:
-  olivia_4_250:
-    adapter: fldigi
-    fldigi_mode: Olivia 4/250
-    default_coding: base64
-    default_fec: 1
-    announce_mode: true
-    auto_detect_mode: false
-    keep_human_readable_frame: true
+```yaml
+mode: OLIVIA-4-250
 ```
 
-The profile determines:
+A mode profile automatically defines:
 
--   modem backend
--   modulation
--   coding
--   FEC
--   TXID/RXID policy
+- modem backend
+- fldigi mode
+- default framing
+- FEC policy
+- TXID (announce mode)
+- RXID policy
+- human-readable frame policy
 
-------------------------------------------------------------------------
+Current defaults:
 
-## Human-readable frame
+| Mode | Framing | TXID |
+|------|----------|------|
+| Olivia 4/250 | Base64 | enabled |
+| Contestia 4/250 | Base32 | enabled |
 
-``` text
-HA2ZB IL2P CODING=BASE64 LEN=69 <IL2P>...</IL2P>
+RXID is intentionally disabled because both endpoints already know the negotiated mode.
+
+---
+
+# REST API
+
+Main endpoints:
+
+```
+GET  /status
+
+POST /watch/start
+POST /watch/stop
+POST /watch/pause
+POST /watch/resume
+
+POST /send
+POST /send/aprs
+
+GET  /rx/results
+GET  /rx/results/{id}
+
+GET  /statistics
+
+GET  /modes
 ```
 
-The project intentionally keeps the transmitted frame understandable for
-both operators and third parties.
+The REST API represents the Application Layer.
 
-------------------------------------------------------------------------
+Applications never interact directly with fldigi or IL2P internals.
 
-## REST API
+---
 
-### Installation
+# Testing
 
-``` bash
-python -m pip install -r requirements.txt
+The project includes automated regression tests.
+
+Run locally:
+
+```bash
+python -m pytest -v
 ```
 
-### Start
+GitHub Actions executes the same test suite automatically after every push and pull request.
 
-``` bash
-python IL2P_rest_service.py --config il2p_gateway.yaml
-```
+---
 
-### Status
+# Current Status
 
-``` http
-GET /status
-```
+## Implemented
 
-### Send APRS message
+- Native IL2P encoder / decoder
+- AX.25 compatibility
+- Reed-Solomon FEC
+- Base32 / Base64 framing
+- fldigi XML-RPC integration
+- Automatic coding detection
+- Runtime RX watcher
+- REST API
+- Mode profiles
+- Half-duplex runtime controller
+- RX polling model
+- Human-readable framing
+- GitHub Actions CI
+- Automated regression tests
 
-``` json
-POST /message
-{
-  "to":"HA5XYZ",
-  "text":"Hello",
-  "transport":{
-      "mode":"olivia_4_250"
-  }
-}
-```
+Real on-air testing has already been successfully performed using Olivia and Contestia.
 
-### Encode only
+---
 
-``` json
-POST /message
-{
-  "to":"HA5XYZ",
-  "text":"Hello",
-  "transport":{
-      "mode":"contestia_4_250",
-      "tx":false
-  }
-}
-```
+# Roadmap
 
-### Poll RX results
+Next milestones:
 
-``` http
-GET /rx/results
-GET /rx/results/{id}
-```
-
-See `rest_api.md` for details.
-
-------------------------------------------------------------------------
-
-## CLI Examples
-
-``` bash
-python tools/il2p_encode.py ...
-python tools/il2p_decode.py ...
-python tools/il2p_frame.py encode ...
-python tools/il2p_frame.py decode ...
-```
-
-------------------------------------------------------------------------
-
-## Testing
-
-``` bash
-python -m pytest
-```
-
-Using `python -m pytest` is recommended, particularly on Microsoft Store
-Python installations.
-
-------------------------------------------------------------------------
-
-## Current Status
-
-### Completed
-
--   IL2P encoder
--   IL2P decoder
--   AX.25 compatibility
--   Reed-Solomon FEC
--   Base32/Base64 framing
--   REST service skeleton
--   Mode profile abstraction
--   fldigi integration
-
-### Planned
-
--   Background RX watcher
--   Automatic frame dispatch
--   Additional modem adapters
--   Gateway routing
--   APRS network integration
--   Extended diagnostics
+- Complete fldigi runtime integration
+- Full REST-controlled radio operation
+- APRS parser module
+- Registry service
+- ACK / Retry manager
+- Gateway routing
+- Store-and-forward
+- Node-RED integration
 
 ------------------------------------------------------------------------
 
