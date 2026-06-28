@@ -24,7 +24,15 @@ class FldigiXmlRpcModem:
             carrier = str(self.rpc.main.get_wfcarrier())
         except Exception:
             carrier = "N/A"
-        return ModemStatus(name=name, trx=trx, carrier=carrier)
+        try:
+            status1 = str(self.rpc.main.get_status1())
+        except Exception:
+            status1 = None
+        try:
+            status2 = str(self.rpc.main.get_status2())
+        except Exception:
+            status2 = None
+        return ModemStatus(name=name, trx=trx, carrier=carrier, status1=status1, status2=status2)
 
     def set_mode(self, mode_name: str) -> None:
         """Set fldigi modem by visible fldigi mode name.
@@ -51,7 +59,7 @@ class FldigiXmlRpcModem:
         # IL2P links this is normally disabled because the application layer
         # sets the expected mode explicitly.
         self.rpc.main.set_txid(bool(announce_mode))
-        self.rpc.main.set_rxid(bool(auto_detect_mode))
+        # self.rpc.main.set_rxid(bool(auto_detect_mode))
 
     def return_to_rx(self) -> None:
         self.rpc.main.rx()
@@ -66,6 +74,48 @@ class FldigiXmlRpcModem:
             except Exception:
                 pass
 
+    def _coerce_rpc_text(self, data: object) -> str:
+        if data is None:
+            return ""
+        if isinstance(data, bytes):
+            return data.decode("utf-8", errors="replace")
+        if isinstance(data, xmlrpc.client.Binary):
+            return data.data.decode("utf-8", errors="replace")
+        return str(data)
+
+    def _get_transmitted_text(self) -> str:
+        """Return text fldigi has actually transmitted since last query.
+
+        fldigi's tx.get_data() is incremental: each call returns only the TX
+        data transmitted since the previous call. We use it to wait until the
+        complete queued text has really gone out before forcing fldigi back to
+        RX.
+        """
+        return self._coerce_rpc_text(self.rpc.tx.get_data())
+
+    def _wait_until_text_transmitted(
+        self,
+        text: str,
+        *,
+        timeout_s: float = 300.0,
+        poll_s: float = 0.25,
+    ) -> bool:
+        sent = ""
+        deadline = time.time() + timeout_s
+
+        while time.time() < deadline:
+            try:
+                chunk = self._get_transmitted_text()
+            except Exception:
+                return False
+            if chunk:
+                sent += chunk
+                if text in sent:
+                    return True
+            time.sleep(poll_s)
+
+        return False
+
     def tx_text(self, text: str, options: TxOptions | None = None) -> None:
         options = options or TxOptions()
         if options.strip_newlines:
@@ -76,29 +126,50 @@ class FldigiXmlRpcModem:
             announce_mode=options.announce_mode,
             auto_detect_mode=options.auto_detect_mode,
         )
+
+        # Flush fldigi's incremental TX monitor before starting this transmission.
+        # This prevents earlier/manual TX data from satisfying the completion test.
+        try:
+            self._get_transmitted_text()
+        except Exception:
+            pass
+
         self.rpc.text.clear_tx()
         self.rpc.text.add_tx(text)
         self.rpc.main.tx()
-        # fldigi should return to RX when the queued text is sent, but explicitly
-        # ask for RX after the transmit queue has drained / state changes back.
-        while True:
-            try:
-                if self.rpc.main.get_trx_state() == "RX":
-                    break
-            except Exception:
-                break
-            time.sleep(0.2)
+
+        timeout_s = float(getattr(options, "tx_timeout_s", 300.0))
+        poll_s = float(getattr(options, "tx_poll_s", 0.25))
+        transmitted = self._wait_until_text_transmitted(
+            text,
+            timeout_s=timeout_s,
+            poll_s=poll_s,
+        )
+
         if options.return_to_rx:
             try:
                 self.return_to_rx()
             except Exception:
                 pass
+
+        if not transmitted:
+            # Do not raise here: returning to RX is more important in field use.
+            # The REST layer can later expose this as a warning/diagnostic.
+            pass
+
         if options.rx_resync_delay_s > 0:
             time.sleep(options.rx_resync_delay_s)
         self.clear_rx()
 
     def rx_text(self) -> str:
-        data = self.rpc.text.get_rx()
+        # rx.get_data() returns only newly received text in fldigi builds that
+        # expose it. text.get_rx() is kept as a fallback for older XML-RPC APIs.
+        try:
+            data = self.rpc.rx.get_data()
+        except Exception:
+            data = self.rpc.text.get_rx()
+        if data is None:
+            return ""
         if isinstance(data, bytes):
             return data.decode("utf-8", errors="replace")
         return str(data)
