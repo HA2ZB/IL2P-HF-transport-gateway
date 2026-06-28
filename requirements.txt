@@ -1,6 +1,11 @@
-reedsolo
-fastapi
-uvicorn
-pyyaml
-pydantic
-pytest
+reedsolo>=1.7
+
+fastapi>=0.115,<0.136
+starlette>=0.40,<1.0
+uvicorn>=0.30
+
+pyyaml>=6.0
+pydantic>=2.0
+
+pytest>=8.0
+httpx>=0.27
