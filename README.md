@@ -2,6 +2,16 @@
 
 > **Open-source HF transport engine for IL2P messaging over modern narrow-band amateur radio digital modes.**
 
+> **Project status (Sprint 4.1)**
+>
+> ✅ End-to-end HF transport operational
+>
+> ✅ REST-controlled transmission and reception
+>
+> ✅ Validated over Olivia and Contestia using fldigi
+>
+> ⚠ Experimental software – API and internal architecture may still evolve.
+
 ---
 
 ## Overview
@@ -69,9 +79,9 @@ The receiver continuously monitors fldigi output while applications communicate 
 
 ---
 
-# Sprint 4
+# Sprint 4 / 4.1
 
-Sprint 4 stabilizes the public API.
+Sprint 4 established the public REST architecture, while Sprint 4.1 completed the first stable end-to-end radio operation.
 
 ## Added
 
@@ -81,6 +91,12 @@ Sprint 4 stabilizes the public API.
 - GitHub Actions CI
 - Expanded automated tests
 - Canonical human-readable over-the-air framing
+- Automatic TX → RX handling
+- Continuous RX watcher operation
+- Pollable RX results
+- Runtime diagnostics (SNR, frequency offset, RS statistics)
+- Stable watcher state machine
+- End-to-end TX/RX validation over fldigi
 
 Canonical transmitted frame:
 
@@ -97,8 +113,6 @@ This intentionally keeps every transmission identifiable as amateur-radio digita
 Applications no longer configure modem parameters individually.
 
 Instead they simply select a mode profile.
-
-Example:
 
 ```yaml
 mode: OLIVIA-4-250
@@ -122,6 +136,8 @@ Current defaults:
 | Contestia 4/250 | Base32 | enabled |
 
 RXID is intentionally disabled because both endpoints already know the negotiated mode.
+
+Mode profiles fully define the Layer-1 operational behaviour, allowing applications to remain completely modem-independent.
 
 ---
 
@@ -152,11 +168,11 @@ The REST API represents the Application Layer.
 
 Applications never interact directly with fldigi or IL2P internals.
 
+The REST interface now provides complete control over transmission, reception and runtime monitoring.
+
 ---
 
 # Testing
-
-The project includes automated regression tests.
 
 Run locally:
 
@@ -166,28 +182,61 @@ python -m pytest -v
 
 GitHub Actions executes the same test suite automatically after every push and pull request.
 
+The regression suite currently covers:
+
+- IL2P encode/decode roundtrip
+- Base32/Base64 framing
+- REST API
+- Mode profiles
+- RX watcher
+- Runtime state transitions
+- TX pause / RX resume behaviour
+
 ---
 
 # Current Status
 
 ## Implemented
 
-- Native IL2P encoder / decoder
+- Native IL2P Type-1 encoder / decoder
 - AX.25 compatibility
-- Reed-Solomon FEC
+- Reed-Solomon FEC (FEC0 / FEC1)
 - Base32 / Base64 framing
 - fldigi XML-RPC integration
+- Automatic mode profile selection
 - Automatic coding detection
-- Runtime RX watcher
+- Continuous RX watcher
+- Pollable RX result queue
+- Runtime diagnostics
+  - SNR
+  - Frequency offset
+  - Reed-Solomon correction statistics
 - REST API
+- Bruno API collection
 - Mode profiles
 - Half-duplex runtime controller
-- RX polling model
-- Human-readable framing
+- Automatic TX → RX return
+- Human-readable over-the-air framing
 - GitHub Actions CI
 - Automated regression tests
 
-Real on-air testing has already been successfully performed using Olivia and Contestia.
+Validated end-to-end operation has been successfully demonstrated over Olivia and Contestia using the complete transport chain:
+
+```
+REST API
+    ↓
+IL2P Core
+    ↓
+fldigi XML-RPC
+    ↓
+HF Digital Modem
+    ↓
+fldigi RX
+    ↓
+IL2P Decoder
+    ↓
+REST RX Results
+```
 
 ---
 
@@ -195,20 +244,20 @@ Real on-air testing has already been successfully performed using Olivia and Con
 
 Next milestones:
 
-- Complete fldigi runtime integration
-- Full REST-controlled radio operation
-- APRS parser module
+- APRS application layer
 - Registry service
 - ACK / Retry manager
 - Gateway routing
+- APRS-IS integration
 - Store-and-forward
 - Node-RED integration
+- Additional modem adapters
 
 ------------------------------------------------------------------------
 
 ## License
 
-This project is licensed under the **GNU General Public License v2.0 or 
+This project is licensed under the **GNU General Public License v2.0 or
 later (GPL-2.0-or-later)**.
 
 See the `LICENSE` file for details.
@@ -229,7 +278,6 @@ source code from the **Dire Wolf** project by **John Langner (WB2OSZ)**.
 Dire Wolf is licensed under the GNU General Public License v2.0 (GPL-2.0).
 Where applicable, this project complies with the corresponding GPL license
 requirements.
-
 
 ## Contributing
 
