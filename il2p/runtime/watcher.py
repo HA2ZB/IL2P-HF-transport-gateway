@@ -51,10 +51,19 @@ class RxWatcher:
     layer can poll RxStore, and fldigi is only one possible RxTextSource.
     """
 
-    def __init__(self, store: RxStore, *, mode: str | None = None, max_buffer: int = 20000) -> None:
+    def __init__(
+        self,
+        store: RxStore,
+        *,
+        mode: str | None = None,
+        max_buffer: int = 20000,
+        candidate_timeout_s: float = 45.0,
+    ) -> None:
         self.store = store
         self.mode = mode
         self.max_buffer = max_buffer
+        self.candidate_timeout_s = candidate_timeout_s
+        self.candidate_started_at: float | None = None
         self.buffer = ""
         self.processed_candidates: set[str] = set()
         self.snr_samples: list[float] = []
@@ -66,7 +75,20 @@ class RxWatcher:
 
     def reset_frame_tracking(self) -> None:
         self.frame_active = False
+        self.candidate_started_at = None
         self.frame_snr_samples = []
+
+    def tick(self) -> None:
+        """Advance time-based watcher state even if no new RX text arrives."""
+        if (
+            self.frame_active
+            and self.candidate_started_at is not None
+            and time.time() - self.candidate_started_at > self.candidate_timeout_s
+        ):
+            self.buffer = ""
+            self.reset_frame_tracking()
+            if self.store.state == LinkState.FRAME_CANDIDATE:
+                self.store.set_state(LinkState.RX_NOISE, "frame candidate timeout")
 
     def update_status(self, *, status1: str | None = None, status2: str | None = None) -> None:
         self.last_status1 = status1 if status1 is not None else self.last_status1
@@ -92,6 +114,7 @@ class RxWatcher:
 
     def feed(self, chunk: str) -> list[int]:
         """Feed newly received text and return IDs of appended RxResult objects."""
+        self.tick()
         if not chunk:
             return []
         self.stats.chunks_seen += 1
@@ -102,6 +125,7 @@ class RxWatcher:
         compact = "".join(self.buffer.split()).upper()
         if not self.frame_active and (BEGIN_TAG in compact or "LEN" in compact):
             self.frame_active = True
+            self.candidate_started_at = time.time()
             self.frame_snr_samples = []
             self.store.set_state(LinkState.FRAME_CANDIDATE, "IL2P-like RX text detected")
 
@@ -118,7 +142,7 @@ class RxWatcher:
 
         if appended:
             self.reset_frame_tracking()
-            self.store.set_state(LinkState.IDLE, "RX watcher waiting")
+            self.store.set_state(LinkState.RX_NOISE, "RX watcher waiting")
         elif self.store.state not in {LinkState.TX_ACTIVE, LinkState.TX_ENCODING, LinkState.TX_REQUESTED, LinkState.RX_RESYNC}:
             self.store.set_state(LinkState.RX_NOISE if not self.frame_active else LinkState.FRAME_CANDIDATE)
         return appended
@@ -212,6 +236,8 @@ class FldigiWatcherService:
                 chunk = self.source.rx_text()
                 if chunk:
                     self.watcher.feed(chunk)
+                else:
+                    self.watcher.tick()
             except Exception as e:
                 self.watcher.stats.last_error = str(e)
                 self.watcher.store.set_state(LinkState.ERROR, f"RX watcher error: {e}")
