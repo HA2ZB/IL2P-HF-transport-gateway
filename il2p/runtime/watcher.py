@@ -123,11 +123,15 @@ class RxWatcher:
             self.buffer = self.buffer[-self.max_buffer:]
 
         compact = "".join(self.buffer.split()).upper()
-        if not self.frame_active and (BEGIN_TAG in compact or "LEN" in compact):
+        # Only the explicit IL2P begin tag starts a frame candidate.
+        # A generic LEN token is too weak and can be left behind in the
+        # rolling buffer after a successfully decoded frame, causing the
+        # watcher to re-enter FRAME_CANDIDATE without a new frame.
+        if not self.frame_active and BEGIN_TAG in compact:
             self.frame_active = True
             self.candidate_started_at = time.time()
             self.frame_snr_samples = []
-            self.store.set_state(LinkState.FRAME_CANDIDATE, "IL2P-like RX text detected")
+            self.store.set_state(LinkState.FRAME_CANDIDATE, "IL2P begin tag detected")
 
         appended: list[int] = []
         for candidate in extract_frame_candidates(self.buffer):
@@ -141,6 +145,11 @@ class RxWatcher:
             appended.append(self._process_candidate(candidate))
 
         if appended:
+            # The RX buffer is only a frame assembly buffer, not a log.
+            # Once a candidate has produced a result, keep the result in
+            # RxStore and discard the consumed text. Otherwise old LEN/<IL2P>
+            # markers can retrigger FRAME_CANDIDATE repeatedly.
+            self.buffer = ""
             self.reset_frame_tracking()
             self.store.set_state(LinkState.RX_NOISE, "RX watcher waiting")
         elif self.store.state not in {LinkState.TX_ACTIVE, LinkState.TX_ENCODING, LinkState.TX_REQUESTED, LinkState.RX_RESYNC}:
