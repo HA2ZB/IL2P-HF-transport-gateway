@@ -287,3 +287,82 @@ ideas are welcome.
 The long-term objective is to provide a completely open HF digital
 transport platform built around IL2P and standard amateur radio
 software.
+
+## Binary modem backend API
+
+`il2p.modem.ModemBackend` defines `status()`, `set_mode(name)`,
+`send(data: bytes, options)` and `receive() -> bytes`. Each send carries one
+complete binary IL2P frame. Receive returns one complete frame, or `b""` when
+no frame is available. Adapters retain partial transport data between polls;
+a malformed transport frame is consumed and raises `ValueError`, allowing
+later frames to be read. Transport delivery does not imply an APRS or
+application acknowledgement.
+
+The fldigi adapter owns Base32/Base64 encoding and canonical text framing.
+The REST TX path passes binary IL2P to `send()`; its `framed_text` preview
+uses the same adapter formatter. Raw (`none`) coding remains unavailable for
+fldigi TX. Existing profile names and REST response fields are preserved.
+
+`Modem` remains an alias for `ModemBackend`. Fldigi's `tx_text()` and
+`rx_text()` remain adapter-specific compatibility helpers. The existing
+fldigi watcher deliberately continues using the text stream to preserve
+candidate timeouts, malformed-frame results, and SNR sampling while a frame
+is arriving. Do not mix `receive()` and `rx_text()` on the same adapter
+instance: both consume the same incoming stream. Packet RX clients must
+reuse an adapter instance across polls.
+
+Status adds `backend`, `mode`, `state`, `snr_db`, `bitrate_bps`, and `details`
+while preserving legacy fldigi fields. Unknown metrics remain `None`.
+Mercury KISS/TCP broadcast is also supported, with a separate binary RX
+watcher. Mercury ARQ is a later step.
+
+## Mercury KISS/TCP broadcast
+
+The adapter was checked against Mercury **v1.9.15**, commit
+`8a47831882c9751b1fee5bcbf5f9de11fb46ac4b`:
+
+- [KISS commands and escaping](https://github.com/Rhizomatica/mercury/blob/v1.9.15/datalink_broadcast/kiss.h)
+- [TCP broadcast wrapping and RX delivery](https://github.com/Rhizomatica/mercury/blob/v1.9.15/data_interfaces/tcp_interfaces.c)
+- [Mode frame capacities](https://github.com/Rhizomatica/mercury/blob/v1.9.15/datalink_broadcast/bcast_modes.h)
+- [Port configuration](https://github.com/Rhizomatica/mercury/blob/v1.9.15/common/mercury_cli.c)
+
+Configure `mercury.host`, `mercury.port` and `mercury.mode_index` in
+`il2p_gateway.yaml` to match the running Mercury process. The upstream
+broadcast port defaults to **8100** (`-b` overrides it). Mode index defaults
+to **1 / DATAC3** upstream. This KISS interface cannot query or change the
+actual modem mode; the configured mode is a capacity assumption, not telemetry.
+
+Select `transport.mode: mercury_broadcast`, `coding: profile` (or `none`).
+Use `tx: false` for encode-only preview; `tx: true` queues data for radio TX.
+The existing fldigi profile remains the default. For receive-only operation,
+POST `/watch/start` with `{"mode":"mercury_broadcast"}` and poll
+`/rx/results`. `/watch/stop` releases the broadcast socket. Status reads do
+not connect or send probes. Loading configuration does not start a watcher.
+
+The TCP packet is `C0 02 <escaped binary IL2P> C0`: `C0` becomes `DB DC`
+and `DB` becomes `DB DD`. No Base32/Base64 or text tags are sent to Mercury.
+The Base64 field in REST responses is only a binary preview. Command `02`
+means an unformatted message; Mercury adds its own one-byte header and
+two-byte length prefix for RF, then removes these and padding before RX
+delivery. Command `03` means a prebuilt **Mercury modem frame**, so it is
+unsuitable for a bare IL2P frame.
+
+The complete IL2P frame must fit `modem_frame_bytes - 3` (e.g. DATAC3:
+123 bytes; DATAC1: 507 bytes). Oversize TX is rejected before connecting,
+because upstream can silently truncate messages. There is no fragmentation.
+Update the gateway's mode index whenever Mercury's external mode changes.
+
+Mercury accepts one broadcast client at a time; disconnect other broadcast
+clients before using the gateway. REST TX and the binary watcher reuse one
+socket and retain partial/concatenated KISS frames across polls. Invalid
+escapes/oversize RX frames produce consumed errors and subsequent frames
+remain readable. Only command `02` on KISS port 0 is treated as IL2P;
+other data commands produce errors, control commands/other ports are ignored.
+Legacy unwrapped Mercury/RaptorQ modem frames are not decoded by this backend.
+
+Successful `send()` means TCP queueing, not RF completion or remote delivery.
+Failed writes are never automatically replayed. RX reconnects on subsequent
+polls after disconnect, discarding old partial transport data. No application
+ACK/retry or Mercury ARQ is implemented; APRS ACK remains an application payload.
+Unknown SNR/bitrate/TRX metrics stay unknown. The fldigi text watcher remains
+in use for its SNR samples, candidate timeouts and malformed text results.

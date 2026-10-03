@@ -27,3 +27,9 @@ def test_legacy_profile_keys_still_work():
     assert p.adapter == "fldigi"
     assert p.fldigi_mode == "Contestia 4/250"
     assert p.default_coding == "base32"
+
+
+def test_mercury_profile_defaults_to_binary():
+    p = profile_from_config("mercury_broadcast", {"adapter": "mercury"})
+    assert p.adapter == "mercury"
+    assert p.default_coding == "none"

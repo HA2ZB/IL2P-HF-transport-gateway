@@ -18,6 +18,8 @@ import binascii
 import re
 import time
 import uuid
+import threading
+from contextlib import asynccontextmanager
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Literal
@@ -29,8 +31,8 @@ from pydantic import BaseModel, Field
 from il2p.codec import decode_il2p_frame, encode_il2p_type1_ui, rebuild_ax25_ui_frame
 from il2p.config import ModeProfile, profile_from_config
 from il2p.framing import decode_frame_text, encode_frame_text
-from il2p.modem import FldigiXmlRpcModem, TxOptions
-from il2p.runtime import FldigiWatcherService, LinkState, RxDiagnostics, RxStore, RxWatcher
+from il2p.modem import FldigiXmlRpcModem, MercuryKissTcpModem, TxOptions
+from il2p.runtime import FldigiWatcherService, LinkState, RxDiagnostics, RxStore, RxWatcher, PacketRxWatcher, PacketWatcherService
 
 
 # ---------------------------------------------------------------------------
@@ -46,10 +48,27 @@ class ServiceState:
         self.rx_store = RxStore(maxlen=500)
         self.watcher_service: FldigiWatcherService | None = None
         self.watcher_profile: str | None = None
+        self.mercury_modem: MercuryKissTcpModem | None = None
+        self.mercury_lock = threading.Lock()
 
 
 state = ServiceState()
-app = FastAPI(title="IL2P APRS HF Gateway REST API", version="0.2")
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    try:
+        yield
+    finally:
+        if state.watcher_service:
+            state.watcher_service.stop()
+            state.watcher_service = None
+            state.watcher_profile = None
+        if state.mercury_modem:
+            state.mercury_modem.close()
+
+
+app = FastAPI(title="IL2P APRS HF Gateway REST API", version="0.2", lifespan=lifespan)
 
 
 def load_config(path: str | Path) -> dict[str, Any]:
@@ -93,6 +112,8 @@ def normalize_coding(value: str | None, profile: ModeProfile) -> str:
     coding = aliases.get(coding, coding)
     if coding not in ("base32", "base64", "none"):
         raise HTTPException(status_code=400, detail="coding must be profile, base32, base64 or none")
+    if profile.adapter == "mercury" and coding != "none":
+        raise HTTPException(status_code=400, detail="Mercury requires binary coding=none")
     return coding
 
 
@@ -178,6 +199,29 @@ def fldigi_modem() -> FldigiXmlRpcModem:
     return FldigiXmlRpcModem(cfg_get("fldigi.xmlrpc_url", "http://127.0.0.1:7362"))
 
 
+def mercury_modem() -> MercuryKissTcpModem:
+    # Mercury supports one broadcast client: share RX and TX's socket/parser.
+    with state.mercury_lock:
+        settings = (str(cfg_get("mercury.host", "127.0.0.1")), int(cfg_get("mercury.port", 8100)),
+                    int(cfg_get("mercury.mode_index", 1)), float(cfg_get("mercury.timeout_s", 3.0)))
+        current = state.mercury_modem
+        if current and (current.host, current.port, current.mode_index, current.timeout_s) != settings:
+            if isinstance(state.watcher_service, PacketWatcherService) and state.watcher_service.running:
+                raise ValueError("Stop Mercury RX watcher before changing Mercury connection settings")
+            current.close()
+            state.mercury_modem = None
+        if state.mercury_modem is None:
+            state.mercury_modem = MercuryKissTcpModem(
+                settings[0], settings[1], mode_index=settings[2], timeout_s=settings[3],
+            )
+        return state.mercury_modem
+
+
+def mercury_status() -> dict[str, Any]:
+    # Status does not open a socket or send radio probes.
+    return asdict(state.mercury_modem.status()) if state.mercury_modem else {"backend": "mercury", "state": "disconnected"}
+
+
 def fldigi_status() -> dict[str, Any]:
     try:
         s = fldigi_modem().status()
@@ -186,7 +230,17 @@ def fldigi_status() -> dict[str, Any]:
         return {"connected": False, "error": str(e)}
 
 
-def transmit_text(profile: ModeProfile, text: str) -> None:
+def transmit_frame(profile: ModeProfile, data: bytes, *, coding: str, callsign: str) -> None:
+    if profile.adapter == "mercury":
+        try:
+            mercury_modem().send(data, TxOptions(coding=coding, callsign=callsign))
+        except ValueError as error:
+            state.rx_store.set_state(LinkState.ERROR, str(error))
+            raise HTTPException(status_code=400, detail=str(error))
+        except Exception as error:
+            state.rx_store.set_state(LinkState.ERROR, str(error))
+            raise HTTPException(status_code=502, detail=f"Mercury TX failed: {error}")
+        return  # TCP queueing is not RF completion or any application ACK.
     if profile.adapter != "fldigi":
         raise HTTPException(status_code=400, detail=f"TX adapter not implemented for profile {profile.name}: {profile.adapter}")
     watcher_was_running = bool(state.watcher_service and state.watcher_service.running and not state.watcher_service.paused)
@@ -194,9 +248,11 @@ def transmit_text(profile: ModeProfile, text: str) -> None:
         state.watcher_service.pause("local transmit")
     try:
         modem = fldigi_modem()
-        modem.tx_text(
-            text,
+        modem.send(
+            data,
             TxOptions(
+                coding=coding,
+                callsign=callsign,
                 mode_name=profile.fldigi_mode,
                 announce_mode=profile.announce_mode,
                 auto_detect_mode=profile.auto_detect_mode,
@@ -289,18 +345,23 @@ def encode_pipeline(src: str, dst: str, info: str, tr: TransportRequest) -> dict
     ax25, raw_hdr, full_hdr, enc_payload, il2p = encode_il2p_type1_ui(src, dst, info_bytes, fec)
     if coding == "none":
         framed = ""
+    elif profile.adapter == "fldigi":
+        framed = FldigiXmlRpcModem.frame_text(
+            il2p, TxOptions(coding=coding, callsign=src.split("-")[0]),
+        )
     else:
         framed = encode_frame_text(il2p, coding=coding, callsign=src.split("-")[0])
 
-    if tx and coding == "none":
+    if tx and coding == "none" and profile.adapter == "fldigi":
         state.rx_store.set_state(LinkState.ERROR, "coding=none cannot be sent through fldigi text XML-RPC")
         raise HTTPException(status_code=400, detail="coding=none cannot be sent through fldigi text XML-RPC")
 
     if tx:
         state.rx_store.set_state(LinkState.TX_ACTIVE, "local transmit")
-        transmit_text(profile, framed)
-        state.rx_store.set_state(LinkState.RX_RESYNC, "post-TX RX buffer flush")
-        state.rx_store.set_state(LinkState.IDLE, "RX watcher resumed")
+        transmit_frame(profile, il2p, coding=coding, callsign=src.split("-")[0])
+        if profile.adapter == "fldigi":
+            state.rx_store.set_state(LinkState.RX_RESYNC, "post-TX RX buffer flush")
+        state.rx_store.set_state(LinkState.IDLE, "TCP packet queued" if profile.adapter == "mercury" else "RX watcher resumed")
     else:
         state.rx_store.set_state(LinkState.IDLE, "encode only complete")
 
@@ -395,6 +456,7 @@ def status() -> dict[str, Any]:
             "profile": state.watcher_profile,
         },
         "fldigi": fldigi_status(),
+        "mercury": mercury_status(),
     }
 
 
@@ -497,10 +559,24 @@ def decode(req: DecodeRequest) -> dict[str, Any]:
 @app.post("/rx/watch/start")
 def rx_watch_start(req: WatcherStartRequest) -> dict[str, Any]:
     profile = get_profile(req.mode_name())
-    if profile.adapter != "fldigi":
+    if profile.adapter not in {"fldigi", "mercury"}:
         raise HTTPException(status_code=400, detail=f"RX watcher adapter not implemented for profile {profile.name}: {profile.adapter}")
     if state.watcher_service and state.watcher_service.running:
         return {"ok": True, "already_running": True, "profile": state.watcher_profile}
+
+    if profile.adapter == "mercury":
+        try:
+            modem = mercury_modem()
+            modem.connect()
+        except Exception as error:
+            raise HTTPException(status_code=502, detail=f"Mercury RX watcher setup failed: {error}")
+        state.watcher_service = PacketWatcherService(
+            modem, PacketRxWatcher(state.rx_store, mode=profile.name),
+            poll_s=float(req.poll_s or cfg_get("rx.poll_s", 0.2)),
+        )
+        state.watcher_profile = profile.name
+        state.watcher_service.start()
+        return {"ok": True, "running": True, "profile": profile.name}
 
     modem = fldigi_modem()
     try:
@@ -529,6 +605,8 @@ def rx_watch_start(req: WatcherStartRequest) -> dict[str, Any]:
 def rx_watch_stop() -> dict[str, Any]:
     if state.watcher_service:
         state.watcher_service.stop()
+    if state.mercury_modem:
+        state.mercury_modem.close()
     state.watcher_service = None
     old_profile = state.watcher_profile
     state.watcher_profile = None

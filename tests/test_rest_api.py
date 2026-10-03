@@ -73,3 +73,20 @@ def test_statistics_endpoint_counts_rx_results():
     assert data["frames_ok"] == 1
     assert data["frames_bad"] == 1
     assert data["last_result_id"] == 2
+
+
+def test_tx_passes_binary_il2p_to_adapter(monkeypatch):
+    from il2p.codec import decode_il2p_frame
+    captured = []
+    class Modem:
+        def send(self, data, options):
+            captured.append((data, options))
+    monkeypatch.setattr("il2p.api.rest.fldigi_modem", lambda: Modem())
+    res = TestClient(app).post("/send", json={
+        "payload": "Hello binary", "transport": {"tx": True},
+    })
+    assert res.status_code == 200
+    data, options = captured[0]
+    assert decode_il2p_frame(data)["aprs_text"] == "Hello binary"
+    assert options.coding == "base64"
+    assert options.callsign == "HA2ZB"

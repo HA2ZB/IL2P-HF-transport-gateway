@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Protocol
 
 
@@ -13,6 +13,12 @@ class ModemStatus:
     rxid: bool | None = None
     status1: str | None = None
     status2: str | None = None
+    backend: str = "unknown"
+    mode: str | None = None
+    state: str | None = None
+    snr_db: float | None = None
+    bitrate_bps: int | None = None
+    details: dict[str, object] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -23,11 +29,23 @@ class TxOptions:
     strip_newlines: bool = True
     return_to_rx: bool = True
     rx_resync_delay_s: float = 0.4
+    coding: str = "base64"
+    callsign: str | None = None
 
 
-class Modem(Protocol):
+class ModemBackend(Protocol):
+    """Packet API: send one IL2P frame; receive one complete frame or b"".
+
+    Adapters own transport framing and retain partial incoming data between
+    polls. A malformed transport frame raises ValueError and is consumed so
+    a subsequent poll can continue. send() does not imply application ACK.
+    """
+
     def status(self) -> ModemStatus: ...
     def set_mode(self, mode_name: str) -> None: ...
-    def set_id_policy(self, *, announce_mode: bool, auto_detect_mode: bool) -> None: ...
-    def tx_text(self, text: str, options: TxOptions | None = None) -> None: ...
-    def rx_text(self) -> str: ...
+    def send(self, data: bytes, options: TxOptions | None = None) -> None: ...
+    def receive(self) -> bytes: ...
+
+
+# Backward-compatible import name. Text helpers are adapter-specific.
+Modem = ModemBackend

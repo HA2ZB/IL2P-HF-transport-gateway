@@ -1,0 +1,23 @@
+meta {
+  name: Mercury RF TX Generic
+  type: http
+  seq: 5
+}
+
+post {
+  url: {{base_url}}/send
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "payload": "HA2ZB Mercury RF test 002",
+    "transport": {
+      "mode": "mercury_broadcast",
+      "coding": "none",
+      "fec": 1,
+      "tx": true
+    }
+  }
+}

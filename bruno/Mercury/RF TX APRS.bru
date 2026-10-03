@@ -1,0 +1,25 @@
+meta {
+  name: Mercury RF TX APRS
+  type: http
+  seq: 6
+}
+
+post {
+  url: {{base_url}}/send/aprs
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "to": "{{aprs_to}}",
+    "text": "Mercury APRS test",
+    "msgid": "001",
+    "transport": {
+      "mode": "mercury_broadcast",
+      "coding": "none",
+      "fec": 1,
+      "tx": true
+    }
+  }
+}

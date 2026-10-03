@@ -1,15 +1,53 @@
 from __future__ import annotations
 
+import re
 import time
 import xmlrpc.client
+from collections import deque
+
+from il2p.framing.text import END_TAG, decode_frame_text, encode_frame_text, extract_frame_candidates
 
 from .base import ModemStatus, TxOptions
 
 
 class FldigiXmlRpcModem:
     def __init__(self, url: str = "http://127.0.0.1:7362") -> None:
+        self._rx_buffer = ""
+        self._rx_frames: deque[bytes | ValueError] = deque()
         self.url = url
         self.rpc = xmlrpc.client.ServerProxy(url, allow_none=True)
+
+    @staticmethod
+    def frame_text(data: bytes, options: TxOptions | None = None) -> str:
+        options = options or TxOptions()
+        if options.coding not in {"base32", "base64"}:
+            raise ValueError("fldigi requires base32 or base64 coding")
+        return encode_frame_text(data, coding=options.coding, callsign=options.callsign)
+
+    def send(self, data: bytes, options: TxOptions | None = None) -> None:
+        self.tx_text(self.frame_text(data, options), options)
+
+    def receive(self) -> bytes:
+        """Poll packet RX; do not mix this with rx_text on the same instance."""
+        if not self._rx_frames:
+            self._rx_buffer += self.rx_text()
+            compact = "".join(self._rx_buffer.split())
+            consumed = 0
+            for candidate in extract_frame_candidates(compact):
+                if END_TAG not in candidate:
+                    break
+                consumed = compact.find(candidate, consumed) + len(candidate)
+                try:
+                    self._rx_frames.append(decode_frame_text(candidate))
+                except ValueError as error:
+                    self._rx_frames.append(error)
+            self._rx_buffer = compact[consumed:][-20000:]
+        if not self._rx_frames:
+            return b""
+        frame = self._rx_frames.popleft()
+        if isinstance(frame, ValueError):
+            raise frame
+        return frame
 
     def status(self) -> ModemStatus:
         try:
@@ -32,7 +70,13 @@ class FldigiXmlRpcModem:
             status2 = str(self.rpc.main.get_status2())
         except Exception:
             status2 = None
-        return ModemStatus(name=name, trx=trx, carrier=carrier, status1=status1, status2=status2)
+        snr = re.search(r"s/n:\s*([-+]?\d+(?:\.\d+)?)\s*dB", status1 or "", re.IGNORECASE)
+        return ModemStatus(
+            name=name, trx=trx, carrier=carrier, status1=status1, status2=status2,
+            backend="fldigi", mode=name, state=trx,
+            snr_db=float(snr.group(1)) if snr else None,
+            details={"carrier": carrier, "status1": status1, "status2": status2},
+        )
 
     def set_mode(self, mode_name: str) -> None:
         """Set fldigi modem by visible fldigi mode name.
@@ -65,6 +109,8 @@ class FldigiXmlRpcModem:
         self.rpc.main.rx()
 
     def clear_rx(self) -> None:
+        self._rx_buffer = ""
+        self._rx_frames.clear()
         try:
             self.rpc.text.clear_rx()
         except Exception:
@@ -168,8 +214,4 @@ class FldigiXmlRpcModem:
             data = self.rpc.rx.get_data()
         except Exception:
             data = self.rpc.text.get_rx()
-        if data is None:
-            return ""
-        if isinstance(data, bytes):
-            return data.decode("utf-8", errors="replace")
-        return str(data)
+        return self._coerce_rpc_text(data)

@@ -19,6 +19,14 @@ fldigi:
   strip_tx_newlines: true
   rx_resync_delay_s: 0.4
 
+# Match the running Mercury process's -b port and -m mode_index.
+# No Mercury connection or radio transmission is made just by loading config.
+mercury:
+  host: "127.0.0.1"
+  port: 8100
+  mode_index: 1             # DATAC3: 126-byte modem frame, 123-byte message
+  timeout_s: 3.0
+
 transport_defaults:
   # REST clients should normally send only transport.mode. "profile" remains
   # accepted as a backward-compatible alias.
@@ -29,6 +37,15 @@ transport_defaults:
   tx: true                 # true = transmit through modem, false = encode only
 
 mode_profiles:
+  mercury_broadcast:
+    adapter: "mercury"
+    default_coding: "none"
+    default_fec: 1
+    announce_mode: false
+    auto_detect_mode: false
+    keep_human_readable_frame: false
+    description: "Binary IL2P over Mercury KISS/TCP broadcast (no ARQ)."
+
   olivia_4_250:
     adapter: "fldigi"
     fldigi_mode: "Olivia 4/250"

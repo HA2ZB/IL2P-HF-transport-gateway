@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from typing import Literal
 
 Coding = Literal["base32", "base64", "none"]
-AdapterName = Literal["fldigi", "raw", "vara", "ardop"]
+AdapterName = Literal["fldigi", "mercury", "raw", "vara", "ardop"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,7 +49,7 @@ def profile_from_config(name: str, raw: dict[str, object]) -> ModeProfile:
     """
 
     adapter = str(raw.get("adapter", raw.get("modem", "fldigi"))).strip().lower()
-    if adapter not in ("fldigi", "raw", "vara", "ardop"):
+    if adapter not in ("fldigi", "mercury", "raw", "vara", "ardop"):
         raise ValueError(f"unsupported modem adapter for {name}: {adapter}")
     default_fec = int(raw.get("default_fec", raw.get("fec", 1)))
     if default_fec not in (0, 1):
@@ -59,7 +59,8 @@ def profile_from_config(name: str, raw: dict[str, object]) -> ModeProfile:
     return ModeProfile(
         name=name,
         adapter=adapter,  # type: ignore[arg-type]
-        default_coding=_coding(raw.get("default_coding", raw.get("coding", "base64"))),
+        default_coding=_coding(raw.get("default_coding", raw.get("coding")),
+                               default="none" if adapter == "mercury" else "base64"),
         default_fec=default_fec,
         max_aprs_payload_bytes=(None if raw.get("max_aprs_payload_bytes") is None else int(raw["max_aprs_payload_bytes"])),
         fldigi_mode=(str(raw.get("fldigi_mode", raw.get("fldigi_mode_hint"))) if raw.get("fldigi_mode", raw.get("fldigi_mode_hint")) else None),

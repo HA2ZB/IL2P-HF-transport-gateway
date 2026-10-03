@@ -1,0 +1,23 @@
+meta {
+  name: Mercury Encode Only
+  type: http
+  seq: 4
+}
+
+post {
+  url: {{base_url}}/send
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "payload": "HA2ZB Mercury RF test 001",
+    "transport": {
+      "mode": "mercury_broadcast",
+      "coding": "none",
+      "fec": 1,
+      "tx": false
+    }
+  }
+}
