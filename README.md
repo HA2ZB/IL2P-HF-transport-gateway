@@ -54,8 +54,8 @@ Application Layer
  ├── Diagnostics
  └── Modem Abstraction
         │
-        ▼
- fldigi XML-RPC
+        ├── fldigi XML-RPC
+        └── Mercury KISS/TCP
 ```
 
 The transport layer is intentionally independent from APRS. APRS is treated as one possible application protocol running over IL2P.
