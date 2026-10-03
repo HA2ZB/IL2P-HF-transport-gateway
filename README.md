@@ -2,13 +2,15 @@
 
 > **Open-source HF transport engine for IL2P messaging over modern narrow-band amateur radio digital modes.**
 
-> **Project status (Sprint 4.1)**
+> **Project status (Sprint 5)**
 >
 > ✅ End-to-end HF transport operational
 >
 > ✅ REST-controlled transmission and reception
 >
 > ✅ Validated over Olivia and Contestia using fldigi
+>
+> ✅ Mercury broadcast mode tested
 >
 > ⚠ Experimental software – API and internal architecture may still evolve.
 
